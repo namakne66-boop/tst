@@ -1,28 +1,10 @@
-"""
-Syntiox DL  –  REST API
-=======================
-Endpoints:
-  GET  /                        health check
-  POST /info                    get video / playlist info + available qualities
-  POST /download/video          download video as MP4
-  POST /download/audio          download audio as MP3
-  GET  /status/{job_id}         poll async job progress
-  GET  /ffmpeg                  check if ffmpeg is installed
-
-Run:
-  pip install fastapi uvicorn yt-dlp
-  uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-"""
-
 from __future__ import annotations
 
-import asyncio
-import threading
-import uuid
+import os
 from typing import Optional
-
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import engine  # api/engine.py
@@ -31,64 +13,23 @@ import engine  # api/engine.py
 #  App setup
 # ─────────────────────────────────────────────
 app = FastAPI(
-    title="Syntiox DL API",
-    description="YouTube video & audio downloader API powered by yt-dlp",
-    version="1.0.0",
+    title="Syntiox Smart DL API",
+    description="වීඩියෝ විස්තර සමඟ Direct Download ලින්ක් එකම ලබාදෙන API එක",
+    version="2.0.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # tighten for production
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ─────────────────────────────────────────────
-#  In-memory job store  (replace with Redis for prod)
-# ─────────────────────────────────────────────
-jobs: dict[str, dict] = {}
-
-
-# ─────────────────────────────────────────────
-#  Request / Response models
+#  Request Models
 # ─────────────────────────────────────────────
 class InfoRequest(BaseModel):
     url: str
-
-class VideoDownloadRequest(BaseModel):
-    url: str
-    format_id: str = "best"   # 'best' | '480' | yt-dlp format id
-    save_dir: Optional[str] = None
-
-class AudioDownloadRequest(BaseModel):
-    url: str
-    save_dir: Optional[str] = None
-
-
-# ─────────────────────────────────────────────
-#  Helper: progress hook → job store update
-# ─────────────────────────────────────────────
-def _make_hook(job_id: str):
-    def hook(d: dict):
-        job = jobs.get(job_id, {})
-        if d["status"] == "downloading":
-            raw = d.get("_percent_str", "0%").strip()
-            pct = "".join(c for c in raw if c.isprintable() and c != "\x1b")
-            job.update({
-                "state":    "downloading",
-                "percent":  pct,
-                "speed":    d.get("_speed_str", "N/A").strip(),
-                "eta":      d.get("_eta_str", "N/A").strip(),
-            })
-        elif d["status"] == "finished":
-            job.update({
-                "state":   "merging",
-                "percent": "100%",
-                "file":    d.get("filename", ""),
-            })
-        jobs[job_id] = job
-    return hook
-
 
 # ─────────────────────────────────────────────
 #  Routes
@@ -97,7 +38,7 @@ def _make_hook(job_id: str):
 @app.get("/", tags=["Health"])
 def root():
     """API health check."""
-    return {"status": "ok", "service": "Syntiox DL API", "version": "1.0.0"}
+    return {"status": "ok", "service": "Syntiox DL API", "version": "2.0.0"}
 
 
 @app.get("/ffmpeg", tags=["Health"])
@@ -108,85 +49,65 @@ def ffmpeg_check():
 
 
 @app.post("/info", tags=["Info"])
-def get_info(body: InfoRequest):
+def get_info(body: InfoRequest, request: Request):
     """
-    Fetch metadata for a YouTube video or playlist.
-
-    Returns video title, thumbnail, duration, uploader,
-    and a list of available video qualities.
+    YouTube URL එකක් ලබා දී වීඩියෝ විස්තර (Thumbnail, Title) සමඟ 
+    කෙලින්ම බාගත හැකි Direct Download Links ලබාගන්න.
     """
     result = engine.get_info(body.url)
     if result.get("type") == "error":
         raise HTTPException(status_code=400, detail=result["message"])
+    
+    # දැනට API එක රන් වෙන සර්වර් එකේ Base URL එක ගනිමු (ලෝකල් හෝ ඔන්ලයින්)
+    base_url = str(request.base_url).rstrip("/")
+    video_url = body.url
+
+    # 1. කෙලින්ම හොඳම වීඩියෝ Quality එක සහ Audio එක බාන්න ප්‍රධාන ලින්ක්ස් දෙකක් හදමු
+    result["best_video_download_url"] = f"{base_url}/direct-download?url={video_url}&format_id=best&type=video"
+    result["audio_download_url"] = f"{base_url}/direct-download?url={video_url}&type=audio"
+
+    # 2. ඔයාට Quality එක තෝරන්න ඕන නම්, හැම format ID එකකටම වෙන වෙනම Download ලින්ක්ස් හදමු
+    if "formats" in result:
+        for fmt in result["formats"]:
+            fmt_id = fmt.get("id")
+            fmt["download_url"] = f"{base_url}/direct-download?url={video_url}&format_id={fmt_id}&type=video"
+
     return result
 
 
-@app.post("/download/video", tags=["Download"])
-def download_video(body: VideoDownloadRequest):
+@app.get("/direct-download", tags=["Download"])
+def direct_download(
+    url: str = Query(..., description="YouTube URL"),
+    type: str = Query("video", description="'video' හෝ 'audio'"),
+    format_id: str = Query("best", description="Format ID එක")
+):
     """
-    Start an **async** video download job.
-
-    Returns a `job_id` – poll `/status/{job_id}` for progress.
-
-    `format_id` options:
-    - `"best"` – highest quality (default)
-    - `"480"`  – 480p max
-    - Any yt-dlp format id from `/info` response
+    මෙම Endpoint එක මගින් සර්වර් එක ඇතුලේ වීඩියෝව බාගෙන, 
+    එසැණින් එය පරිශීලකයාගේ උපාංගයට Direct File එකක් ලෙස ලබාදෙයි.
     """
-    job_id = str(uuid.uuid4())
-    jobs[job_id] = {"state": "queued", "type": "video", "percent": "0%"}
-
-    def _run():
-        jobs[job_id]["state"] = "downloading"
+    # සර්වර් එකේ තාවකාලිකව සේව් කරන්න ඕනේ නිසා save_dir එක null (None) කරමු
+    if type == "video":
         result = engine.download_video(
-            url=body.url,
-            format_id=body.format_id,
-            save_dir=body.save_dir,
-            progress_hook=_make_hook(job_id),
+            url=url,
+            format_id=format_id,
+            save_dir=None,
+            progress_hook=lambda d: None  # සින්ක්‍රනස් නිසා හුක්ස් අවශ්‍ය නැත
         )
-        if result["status"] == "success":
-            jobs[job_id].update({"state": "done", "file": result.get("file", "")})
-        else:
-            jobs[job_id].update({"state": "error", "message": result.get("message", "Unknown error")})
-
-    threading.Thread(target=_run, daemon=True).start()
-    return {"job_id": job_id, "message": "Video download started"}
-
-
-@app.post("/download/audio", tags=["Download"])
-def download_audio(body: AudioDownloadRequest):
-    """
-    Start an **async** audio download job (MP3 192 kbps).
-
-    Returns a `job_id` – poll `/status/{job_id}` for progress.
-    """
-    job_id = str(uuid.uuid4())
-    jobs[job_id] = {"state": "queued", "type": "audio", "percent": "0%"}
-
-    def _run():
-        jobs[job_id]["state"] = "downloading"
+    else:
         result = engine.download_audio(
-            url=body.url,
-            save_dir=body.save_dir,
-            progress_hook=_make_hook(job_id),
+            url=url,
+            save_dir=None,
+            progress_hook=lambda d: None
         )
-        if result["status"] == "success":
-            jobs[job_id].update({"state": "done", "file": result.get("file", "")})
-        else:
-            jobs[job_id].update({"state": "error", "message": result.get("message", "Unknown error")})
 
-    threading.Thread(target=_run, daemon=True).start()
-    return {"job_id": job_id, "message": "Audio download started"}
+    # ෆයිල් එක සාර්ථකව බාගත්තා නම් කෙලින්ම බ්‍රවුසර් එකට push කරමු
+    if result.get("status") == "success":
+        file_path = result.get("file")
+        if file_path and os.path.exists(file_path):
+            return FileResponse(
+                path=file_path,
+                filename=os.path.basename(file_path),
+                media_type="application/octet-stream"
+            )
 
-
-@app.get("/status/{job_id}", tags=["Download"])
-def get_status(job_id: str):
-    """
-    Poll the progress of a download job.
-
-    States: `queued` → `downloading` → `merging` → `done` | `error`
-    """
-    job = jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    return {"job_id": job_id, **job}
+    raise HTTPException(status_code=400, detail=result.get("message", "Download failed"))
