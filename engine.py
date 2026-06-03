@@ -84,7 +84,7 @@ def get_info(url: str) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
-            if 'entries' in info:               # playlist
+            if 'entries' in info:
                 videos = [
                     {'title': e.get('title'), 'url': e.get('url')}
                     for e in info['entries'] if e.get('url')
@@ -95,7 +95,7 @@ def get_info(url: str) -> dict:
                     'count':  len(videos),
                     'videos': videos,
                 }
-            else:                               # single video
+            else:
                 return {
                     'type':     'video',
                     'title':    info.get('title'),
@@ -115,7 +115,6 @@ def download_video(
     progress_hook=None,
 ) -> dict:
     """Download a video (MP4)."""
-    # ⭐ FIX 1: 
     if not save_dir:
         save_dir = os.path.join(os.getcwd(), 'downloads')
     os.makedirs(save_dir, exist_ok=True)
@@ -143,23 +142,41 @@ def download_video(
         'continuedl':           True,
     }
 
-    saved_file: list[str] = []
+    # ⭐ මෙතනදී අපි බාන හැම ෆයිල් කෑල්ලක්ම සහ ffmpeg එකෙන් හදන අලුත් ෆයිල් එකත් ලිස්ට් එකකට ගන්නවා
+    saved_files: list[str] = []
 
     def _capture_hook(d):
         if d['status'] == 'finished':
-            saved_file.append(d.get('filename', ''))
+            saved_files.append(d.get('filename', ''))
         if progress_hook:
             progress_hook(d)
 
+    # ⭐ ffmpeg එක වැඩේ ඉවර කරපු ගමන් ලැබෙන සැබෑ ෆයිල් එක මෙතනින් ගන්නවා
+    def _postprocessor_hook(d):
+        if d['status'] == 'finished':
+            f = d.get('info_dict', {}).get('_filename')
+            if f:
+                saved_files.append(f)
+
     opts['progress_hooks'] = [_capture_hook]
+    opts['postprocessor_hooks'] = [_postprocessor_hook]
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         
-        # නිවැරදිම absolute file path එක return කිරීම
-        final_path = os.path.abspath(saved_file[0]) if saved_file else ''
-        return {'status': 'success', 'file': final_path}
+        # ⭐ ලිස්ට් එකේ අන්තිමටම තියෙන (ffmpeg එකෙන් හදලා ඉතුරු කරපු) ඇත්තටම සර්වර් එකේ තියෙන ෆයිල් එක හොයනවා
+        final_path = ""
+        for f in reversed(saved_files):
+            if f and os.path.exists(f):
+                final_path = os.path.abspath(f)
+                break
+
+        if final_path:
+            return {'status': 'success', 'file': final_path}
+        else:
+            return {'status': 'error', 'message': 'ෆයිල් එක සර්වර් එකේ සොයාගත නොහැක!'}
+            
     except Exception as exc:
         return {'status': 'error', 'message': str(exc)}
 
@@ -170,7 +187,6 @@ def download_audio(
     progress_hook=None,
 ) -> dict:
     """Download audio as MP3 (192 kbps)."""
-    # ⭐ FIX 1: 
     if not save_dir:
         save_dir = os.path.join(os.getcwd(), 'downloads')
     os.makedirs(save_dir, exist_ok=True)
@@ -193,27 +209,37 @@ def download_audio(
         'continuedl':       True,
     }
 
-    saved_file: list[str] = []
+    saved_files: list[str] = []
 
     def _capture_hook(d):
         if d['status'] == 'finished':
-            saved_file.append(d.get('filename', ''))
+            saved_files.append(d.get('filename', ''))
         if progress_hook:
             progress_hook(d)
 
+    def _postprocessor_hook(d):
+        if d['status'] == 'finished':
+            f = d.get('info_dict', {}).get('_filename')
+            if f:
+                saved_files.append(f)
+
     opts['progress_hooks'] = [_capture_hook]
+    opts['postprocessor_hooks'] = [_postprocessor_hook]
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         
-        if saved_file:
+        final_path = ""
+        for f in reversed(saved_files):
+            if f and os.path.exists(f):
+                final_path = os.path.abspath(f)
+                break
 
-            raw_path = saved_file[0]
-            base_path, _ = os.path.splitext(raw_path)
-            final_mp3_path = os.path.abspath(base_path + '.mp3')
-            return {'status': 'success', 'file': final_mp3_path}
+        if final_path:
+            return {'status': 'success', 'file': final_path}
+        else:
+            return {'status': 'error', 'message': 'ඕඩියෝ ෆයිල් එක සොයාගත නොහැක!'}
             
-        return {'status': 'error', 'message': 'File not saved'}
     except Exception as exc:
         return {'status': 'error', 'message': str(exc)}
