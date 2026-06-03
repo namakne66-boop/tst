@@ -1,7 +1,6 @@
 import yt_dlp
 import os
 import shutil
-import uuid
 
 # ──────────────────────────────────────────────
 #  Silent logger (suppress yt-dlp console noise)
@@ -74,14 +73,7 @@ def check_ffmpeg() -> bool:
 
 
 def get_info(url: str) -> dict:
-    """
-    Fetch metadata for a single video or a playlist.
-
-    Returns:
-        {type: 'video',    title, thumb, duration, uploader, formats: [...]}
-      | {type: 'playlist', title, count, videos: [{title, url}]}
-      | {type: 'error',   message}
-    """
+    """Fetch metadata for a single video or a playlist."""
     opts = {
         **_COMMON_OPTS,
         'extract_flat': 'in_playlist',
@@ -122,19 +114,10 @@ def download_video(
     save_dir: str | None = None,
     progress_hook=None,
 ) -> dict:
-    """
-    Download a video (MP4).
-
-    Args:
-        url:           YouTube / playlist URL
-        format_id:     yt-dlp format id, or 'best' / '480'
-        save_dir:      folder to save; defaults to ~/Videos/Syntiox DL
-        progress_hook: optional yt-dlp progress hook callable
-
-    Returns:
-        {status: 'success', file: <path>} | {status: 'error', message: ...}
-    """
-    save_dir = save_dir or os.path.join(os.path.expanduser('~'), 'Videos', 'Syntiox DL')
+    """Download a video (MP4)."""
+    # ⭐ FIX 1: 
+    if not save_dir:
+        save_dir = os.path.join(os.getcwd(), 'downloads')
     os.makedirs(save_dir, exist_ok=True)
 
     resolution_tag = '_[Best]' if format_id == 'best' else f'_[{format_id}p]'
@@ -151,7 +134,7 @@ def download_video(
         'quiet':   False,
         'verbose': False,
         'logger':  _SilentLogger(),
-        'format':               fmt,
+        'format':              fmt,
         'merge_output_format':  'mp4',
         'outtmpl':              f'{save_dir}/%(title)s{resolution_tag}.%(ext)s',
         'live_from_start':      True,
@@ -159,9 +142,6 @@ def download_video(
         'fragment_retries':     15,
         'continuedl':           True,
     }
-
-    if progress_hook:
-        opts['progress_hooks'] = [progress_hook]
 
     saved_file: list[str] = []
 
@@ -176,7 +156,10 @@ def download_video(
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
-        return {'status': 'success', 'file': saved_file[0] if saved_file else ''}
+        
+        # නිවැරදිම absolute file path එක return කිරීම
+        final_path = os.path.abspath(saved_file[0]) if saved_file else ''
+        return {'status': 'success', 'file': final_path}
     except Exception as exc:
         return {'status': 'error', 'message': str(exc)}
 
@@ -186,18 +169,10 @@ def download_audio(
     save_dir: str | None = None,
     progress_hook=None,
 ) -> dict:
-    """
-    Download audio as MP3 (192 kbps).
-
-    Args:
-        url:           YouTube URL
-        save_dir:      folder to save; defaults to ~/Music/Syntiox DL
-        progress_hook: optional yt-dlp progress hook callable
-
-    Returns:
-        {status: 'success', file: <path>} | {status: 'error', message: ...}
-    """
-    save_dir = save_dir or os.path.join(os.path.expanduser('~'), 'Music', 'Syntiox DL')
+    """Download audio as MP3 (192 kbps)."""
+    # ⭐ FIX 1: 
+    if not save_dir:
+        save_dir = os.path.join(os.getcwd(), 'downloads')
     os.makedirs(save_dir, exist_ok=True)
 
     opts = {
@@ -231,6 +206,14 @@ def download_audio(
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
-        return {'status': 'success', 'file': saved_file[0] if saved_file else ''}
+        
+        if saved_file:
+
+            raw_path = saved_file[0]
+            base_path, _ = os.path.splitext(raw_path)
+            final_mp3_path = os.path.abspath(base_path + '.mp3')
+            return {'status': 'success', 'file': final_mp3_path}
+            
+        return {'status': 'error', 'message': 'File not saved'}
     except Exception as exc:
         return {'status': 'error', 'message': str(exc)}
