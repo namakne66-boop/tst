@@ -42,7 +42,7 @@ def _extract_formats(info: dict) -> list[dict]:
         format_id = f.get('format_id')
 
         if vcodec != 'none' and height:
-            res   = f"{height}p"
+            res = f"{height}p"
             score = 0
             if 'avc' in vcodec: score += 10
             if ext == 'mp4':    score += 5
@@ -73,29 +73,49 @@ def check_ffmpeg() -> bool:
 
 
 def get_info(url: str) -> dict:
-    """Fetch metadata for a single video or a playlist."""
+    """Fetch metadata for a single video, search query, or a playlist."""
+
+    is_search = url.startswith('ytsearch')
+    
     opts = {
         **_COMMON_OPTS,
-        'extract_flat': 'in_playlist',
         'logger': _SilentLogger(),
     }
+    
+    if not is_search:
+        opts['extract_flat'] = 'in_playlist'
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
             if 'entries' in info:
-                videos = [
-                    {'title': e.get('title'), 'url': e.get('url')}
-                    for e in info['entries'] if e.get('url')
-                ]
-                return {
-                    'type':   'playlist',
-                    'title':  info.get('title'),
-                    'count':  len(videos),
-                    'videos': videos,
-                }
+                entries = list(info['entries'])
+                
+                if is_search and len(entries) > 0:
+                    video_info = entries[0]
+                    return {
+                        'type':     'video',
+                        'title':    video_info.get('title'),
+                        'thumb':    video_info.get('thumbnail'),
+                        'duration': video_info.get('duration'),
+                        'uploader': video_info.get('uploader'),
+                        'formats':  _extract_formats(video_info),
+                    }
+                else:
+          
+                    videos = [
+                        {'title': e.get('title'), 'url': e.get('url')}
+                        for e in entries if e.get('url')
+                    ]
+                    return {
+                        'type':   'playlist',
+                        'title':  info.get('title'),
+                        'count':  len(videos),
+                        'videos': videos,
+                    }
             else:
+   
                 return {
                     'type':     'video',
                     'title':    info.get('title'),
@@ -142,7 +162,6 @@ def download_video(
         'continuedl':           True,
     }
 
-    # ⭐ මෙතනදී අපි බාන හැම ෆයිල් කෑල්ලක්ම සහ ffmpeg එකෙන් හදන අලුත් ෆයිල් එකත් ලිස්ට් එකකට ගන්නවා
     saved_files: list[str] = []
 
     def _capture_hook(d):
@@ -151,7 +170,6 @@ def download_video(
         if progress_hook:
             progress_hook(d)
 
-    # ⭐ ffmpeg එක වැඩේ ඉවර කරපු ගමන් ලැබෙන සැබෑ ෆයිල් එක මෙතනින් ගන්නවා
     def _postprocessor_hook(d):
         if d['status'] == 'finished':
             f = d.get('info_dict', {}).get('_filename')
@@ -165,7 +183,6 @@ def download_video(
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
         
-        # ⭐ ලිස්ට් එකේ අන්තිමටම තියෙන (ffmpeg එකෙන් හදලා ඉතුරු කරපු) ඇත්තටම සර්වර් එකේ තියෙන ෆයිල් එක හොයනවා
         final_path = ""
         for f in reversed(saved_files):
             if f and os.path.exists(f):
@@ -179,7 +196,6 @@ def download_video(
             
     except Exception as exc:
         return {'status': 'error', 'message': str(exc)}
-
 
 def download_audio(
     url: str,
