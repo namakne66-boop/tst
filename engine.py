@@ -15,6 +15,7 @@ class _SilentLogger:
 #  Shared yt-dlp headers & extractor args
 # ──────────────────────────────────────────────
 _COMMON_OPTS = {
+    'cookiefile': 'cookies.txt',
     'quiet': True,
     'no_warnings': True,
     'nocheckcertificate': True,
